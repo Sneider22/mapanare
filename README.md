@@ -1,6 +1,6 @@
 # Mapanare
 
-Snake con estética arcade retro y temática venezolana, hecho en Flutter. Corre en web y Android.
+Snake con estética arcade retro y temática venezolana, hecho en Flutter. 
 
 <p align="center">
   <img src="docs/screenshots/inicio.png" width="240" alt="Pantalla de inicio">
