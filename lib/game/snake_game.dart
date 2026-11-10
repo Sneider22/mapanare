@@ -16,6 +16,13 @@ enum Direction {
   Point<int> get vector => Point(dx, dy);
 
   bool isOpposite(Direction other) => dx == -other.dx && dy == -other.dy;
+
+  Direction get opposite => switch (this) {
+    up => down,
+    down => up,
+    left => right,
+    right => left,
+  };
 }
 
 // En qué momento está la partida.
@@ -28,12 +35,35 @@ enum GameStatus { ready, playing, gameOver, won }
 class SnakeGame {
   // `random` es opcional: los tests le pasan uno fijo para que la comida
   // salga siempre en el mismo sitio y la prueba sea predecible.
-  SnakeGame(this.cells, {Random? random}) : _random = random ?? Random() {
+  SnakeGame(this.cells, {Random? random, this.criollo = false})
+    : _random = random ?? Random() {
     reset();
   }
 
   final int cells; // casillas por lado
+  final bool criollo; // modo Criollo = con anís y apagones
   final Random _random;
+
+  // ===== SORPRESAS DEL MODO CRIOLLO =====
+  // Todo se cuenta en PASOS de la culebra, no en segundos, para que la
+  // lógica no dependa del reloj (y se pueda probar). A 140 ms por paso:
+  static const anisPoints = 3;
+  static const anisChance = 0.3; // probabilidad tras cada comida
+  static const anisLifetime = 60; // ≈ 8 s en el campo y desaparece
+  static const invertedDuration = 36; // ≈ 5 s con los controles al revés
+  static const flickerDuration = 8; // ≈ 1 s de luces parpadeando (aviso)
+  static const darkDuration = 30; // ≈ 4 s de apagón
+
+  Point<int>? anis; // la botella, si hay una en el campo
+  int anisLeft = 0; // pasos que le quedan antes de desaparecer
+  int invertedLeft = 0;
+  int flickerLeft = 0;
+  int darkLeft = 0;
+  int _untilBlackout = 0; // pasos hasta el próximo apagón
+
+  bool get inverted => invertedLeft > 0;
+  bool get flickering => flickerLeft > 0;
+  bool get dark => darkLeft > 0;
 
   late List<Point<int>> snake; // posición actual (snake[0] = cabeza)
   late List<Point<int>> previous; // posición del paso anterior (para animar)
@@ -62,11 +92,22 @@ class SnakeGame {
     score = 0;
     _direction = Direction.right;
     _turns.clear();
+    anis = null;
+    anisLeft = 0;
+    invertedLeft = 0;
+    flickerLeft = 0;
+    darkLeft = 0;
+    _untilBlackout = _nextBlackout();
   }
+
+  // El primer apagón (y cada uno de los siguientes) llega entre ~15 y ~25 s.
+  int _nextBlackout() => 110 + _random.nextInt(70);
 
   // El jugador pide girar.
   void turn(Direction d) {
     if (isOver) return;
+    // Con el anís encima, cada tecla hace lo contrario.
+    if (inverted) d = d.opposite;
 
     // La primera tecla arranca la partida (menos ir hacia atrás).
     if (status == GameStatus.ready) {
@@ -86,12 +127,15 @@ class SnakeGame {
   // Avanza UN paso. El game loop llama esto cada X milisegundos.
   void step() {
     if (status != GameStatus.playing) return;
+    if (criollo) _tickSurprises();
 
     if (_turns.isNotEmpty) _direction = _turns.removeAt(0);
     final newHead = snake.first + _direction.vector;
-    final eats = newHead == food;
+    final eatsAnis = newHead == anis;
+    final eats = newHead == food || eatsAnis;
 
-    final hitsWall = newHead.x < 0 ||
+    final hitsWall =
+        newHead.x < 0 ||
         newHead.y < 0 ||
         newHead.x >= cells ||
         newHead.y >= cells;
@@ -112,24 +156,66 @@ class SnakeGame {
     if (eats) {
       // Crecer = cabeza nueva adelante SIN quitar la última casilla.
       snake = [newHead, ...snake];
-      score++;
-      _spawnFood();
+      if (eatsAnis) {
+        score += anisPoints;
+        anis = null;
+        invertedLeft = invertedDuration;
+      } else {
+        score++;
+        _spawnFood();
+        _maybeSpawnAnis();
+      }
     } else {
       // Moverse = cabeza nueva adelante + quitar la última casilla.
       snake = [newHead, ...snake.sublist(0, snake.length - 1)];
     }
   }
 
-  // Pone la comida en una casilla libre al azar.
-  void _spawnFood() {
-    // Hacemos la lista de TODAS las casillas que no ocupa la culebra y
-    // escogemos una. Usamos un Set para que `contains` sea rapidísimo.
-    final occupied = snake.toSet();
-    final free = [
+  // Los relojitos de las sorpresas: se descuentan un paso cada vez.
+  void _tickSurprises() {
+    if (invertedLeft > 0) invertedLeft--;
+    if (anis != null && --anisLeft <= 0) anis = null;
+
+    // Apagón: primero las luces parpadean (aviso), luego se va la luz.
+    if (darkLeft > 0) {
+      if (--darkLeft == 0) _untilBlackout = _nextBlackout();
+    } else if (flickerLeft > 0) {
+      if (--flickerLeft == 0) darkLeft = darkDuration;
+    } else if (!inverted && --_untilBlackout <= 0) {
+      // Nunca empieza mientras tienes los controles al revés: las dos
+      // cosas juntas serían injustas.
+      flickerLeft = flickerDuration;
+    }
+  }
+
+  // Después de cada comida, a veces aparece una botella de anís.
+  void _maybeSpawnAnis() {
+    if (!criollo || anis != null || inverted || isOver) return;
+    if (_random.nextDouble() >= anisChance) return;
+    // Que no salga pegada a la cabeza: tiene que dar tiempo de decidir.
+    final head = snake.first;
+    final spots = _freeCells()
+        .where((p) => (p.x - head.x).abs() + (p.y - head.y).abs() > 3)
+        .toList();
+    if (spots.isEmpty) return;
+    anis = spots[_random.nextInt(spots.length)];
+    anisLeft = anisLifetime;
+  }
+
+  // TODAS las casillas que no ocupa nada. Usamos un Set para que
+  // `contains` sea rapidísimo.
+  List<Point<int>> _freeCells() {
+    final occupied = {...snake, ?anis};
+    return [
       for (var x = 0; x < cells; x++)
         for (var y = 0; y < cells; y++)
           if (!occupied.contains(Point(x, y))) Point(x, y),
     ];
+  }
+
+  // Pone la comida en una casilla libre al azar.
+  void _spawnFood() {
+    final free = _freeCells();
     if (free.isEmpty) {
       status = GameStatus.won; // llenaste el campo entero
       return;

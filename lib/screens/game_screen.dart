@@ -1,19 +1,37 @@
-import 'dart:math';
-
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
+import '../arcade/arcade_style.dart';
 import '../game/board_size.dart';
 import '../game/food.dart';
+import '../game/game_mode.dart';
+import '../game/records.dart';
 import '../game/snake_game.dart';
-import '../widgets/board_painter.dart';
-import '../widgets/food_painter.dart';
+import '../widgets/arcade_widgets.dart';
+import '../widgets/pixel_board.dart';
+import '../widgets/pixel_foods.dart';
+import '../widgets/pixel_sprite.dart';
 
+// LA PARTIDA, con look de maquinita. Las reglas están en snake_game.dart;
+// esta pantalla solo maneja el tiempo, los controles y el dibujo.
 class GameScreen extends StatefulWidget {
-  const GameScreen({super.key, required this.size, required this.food});
+  const GameScreen({
+    super.key,
+    required this.size,
+    required this.food,
+    this.mode = GameMode.clasico,
+    this.game,
+  });
 
   final BoardSize size;
   final Food food;
+  final GameMode mode; // Criollo = con anís y apagones
+
+  // Solo para tests: una partida ya armada (ej. para las capturas del
+  // README). En el juego normal es null y se crea una nueva.
+  @visibleForTesting
+  final SnakeGame? game;
 
   @override
   State<GameScreen> createState() => _GameScreenState();
@@ -21,35 +39,29 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen>
     with SingleTickerProviderStateMixin {
-  // Récords por tamaño de campo. `static` = pertenece a la CLASE, no a una
-  // pantalla en particular: sobrevive cuando sales al menú y vuelves a
-  // entrar (pero se pierde al cerrar la app; eso lo arreglamos después).
-  static final Map<BoardSize, int> _records = {};
-
-  int get _best => _records[widget.size] ?? 0; // ?? = "si es null, usa 0"
-  bool _newRecord = false;
-
-  static const _headerHeight = 56.0;
-  static const _frame = 12.0;
+  static const _boardSide = 320.0; // el tablero ocupa todo el ancho útil
 
   // Cada cuánto avanza la culebra una casilla. Menos = más rápido.
-  // (Aquí entrará el modo dificultad más adelante.)
   static const _stepTime = Duration(milliseconds: 140);
 
-  late final SnakeGame _game = SnakeGame(widget.size.cells);
+  late final SnakeGame _game = widget.game ??
+      SnakeGame(widget.size.cells, criollo: widget.mode == GameMode.criollo);
+  Sprite get _sprite => foodSprites[widget.food]!;
+
+  // El récord de ESTA combinación modo + campo (lib/game/records.dart).
+  int get _best => Records.best(widget.mode, widget.size);
+  bool _newRecord = false;
 
   // ===== GAME LOOP =====
-  // Un Ticker llama a _onTick en CADA frame de la pantalla (~60 por
-  // segundo) y nos dice cuánto tiempo pasó desde que arrancó.
-  late final _ticker = createTicker(_onTick);
-  Duration _lastStep = Duration.zero; // cuándo fue el último paso
-  double _progress = 1; // qué tanto va del paso actual (0 a 1)
+  // El Ticker nos llama en cada frame (~60 por segundo). Cuando junta
+  // 140 ms, la culebra avanza un paso. En pixel art el movimiento va de
+  // casilla en casilla, como en las maquinitas de antes.
+  late final Ticker _ticker = createTicker(_onTick);
+  Duration _now = Duration.zero;
+  Duration _lastStep = Duration.zero;
 
-  // Para que el teclado le llegue a esta pantalla.
-  final _focus = FocusNode();
-
-  // Para detectar el deslizar del dedo.
-  Offset _drag = Offset.zero;
+  final _focus = FocusNode(); // para que el teclado le llegue al juego
+  Offset _drag = Offset.zero; // para detectar el deslizar del dedo
 
   @override
   void initState() {
@@ -65,44 +77,28 @@ class _GameScreenState extends State<GameScreen>
   }
 
   void _onTick(Duration elapsed) {
+    _now = elapsed;
     if (_game.status != GameStatus.playing) {
-      // Si no estamos jugando, el reloj del juego no corre.
-      _lastStep = elapsed;
-      return;
+      _lastStep = elapsed; // si no estamos jugando, el reloj no corre
     }
-
-    // ¿Ya pasó el tiempo de un paso? Entonces avanzamos. Es un `while`
-    // por si el teléfono se trabó un momento y debemos varios pasos.
+    // `while` por si el teléfono se trabó un momento y debemos varios pasos.
     while (elapsed - _lastStep >= _stepTime) {
       _lastStep += _stepTime;
       _game.step();
       if (_game.isOver) {
-        _saveRecord();
+        _newRecord = Records.submit(widget.mode, widget.size, _game.score);
         break;
       }
     }
-
-    // Cuánto va del paso actual, para el movimiento suave.
-    setState(() {
-      _progress = (elapsed - _lastStep).inMicroseconds /
-          _stepTime.inMicroseconds;
-    });
+    // Redibujamos siempre: así funcionan también los textos que parpadean.
+    setState(() {});
   }
 
-  // Al terminar la partida: si superaste el récord, se actualiza solo.
-  void _saveRecord() {
-    if (_game.score > _best) {
-      _records[widget.size] = _game.score;
-      _newRecord = true;
-    }
-  }
-
-  void _turn(Direction d) => setState(() => _game.turn(d));
+  void _turn(Direction d) => _game.turn(d);
 
   void _restart() {
     setState(() {
       _game.reset();
-      _progress = 1;
       _newRecord = false;
     });
     _focus.requestFocus(); // que el teclado siga funcionando
@@ -113,33 +109,34 @@ class _GameScreenState extends State<GameScreen>
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
     final key = event.logicalKey;
 
-    // `switch` como expresión: devuelve una dirección o null.
     final dir = switch (key) {
       LogicalKeyboardKey.arrowUp || LogicalKeyboardKey.keyW => Direction.up,
       LogicalKeyboardKey.arrowDown || LogicalKeyboardKey.keyS => Direction.down,
       LogicalKeyboardKey.arrowLeft || LogicalKeyboardKey.keyA => Direction.left,
-      LogicalKeyboardKey.arrowRight || LogicalKeyboardKey.keyD =>
-        Direction.right,
-      _ => null, // cualquier otra tecla
+      LogicalKeyboardKey.arrowRight ||
+      LogicalKeyboardKey.keyD => Direction.right,
+      _ => null,
     };
 
     if (dir != null) {
       _turn(dir);
       return KeyEventResult.handled;
     }
-    // Enter o espacio para jugar otra vez después de chocar.
     if (_game.isOver &&
         (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.space)) {
       _restart();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.escape) {
+      Navigator.of(context).pop();
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
   }
 
   // ===== DESLIZAR (TÁCTIL) =====
-  // Vamos sumando cuánto se movió el dedo. Cuando pasa de 24 píxeles,
-  // vemos si se movió más en horizontal o en vertical y giramos.
-  // Luego reiniciamos la suma para poder encadenar giros sin soltar.
+  // Sumamos cuánto se movió el dedo; al pasar de 24 px vemos si fue más
+  // horizontal o vertical y giramos. Se pueden encadenar giros sin soltar.
   void _onPanUpdate(DragUpdateDetails d) {
     _drag += d.delta;
     if (_drag.distance < 24) return;
@@ -153,231 +150,212 @@ class _GameScreenState extends State<GameScreen>
     _drag = Offset.zero;
   }
 
+  bool _blink(int ms) => (_now.inMilliseconds ~/ ms).isEven;
+
   @override
   Widget build(BuildContext context) {
-    return Focus(
+    return ArcadeScaffold(
+      onKey: _onKey,
       focusNode: _focus,
-      autofocus: true,
-      onKeyEvent: _onKey,
-      child: Scaffold(
-        backgroundColor: const Color(0xFF24451A),
-        // El GestureDetector cubre TODA la pantalla: puedes deslizar en
-        // cualquier lado, no solo encima del tablero.
-        body: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onPanStart: (_) => _drag = Offset.zero,
-          onPanUpdate: _onPanUpdate,
-          child: SafeArea(
-            child: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: LayoutBuilder(
-                  builder: (context, box) {
-                    final side = min(
-                      min(box.maxWidth, 640.0),
-                      box.maxHeight - _headerHeight,
-                    );
-                    return ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: SizedBox(
-                        width: side,
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            _buildHeader(),
-                            Container(
-                              color: const Color(0xFF4E8A2E),
-                              padding: const EdgeInsets.all(_frame),
-                              child: AspectRatio(
-                                aspectRatio: 1,
-                                child: Stack(
-                                  children: [
-                                    Positioned.fill(
-                                      child: CustomPaint(
-                                        painter: BoardPainter(
-                                          cells: _game.cells,
-                                          snake: _game.snake,
-                                          previous: _game.previous,
-                                          progress: _progress.clamp(0, 1),
-                                          food: widget.food,
-                                          foodPos: _game.food,
-                                        ),
-                                      ),
-                                    ),
-                                    ..._buildOverlay(),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanStart: (_) => _drag = Offset.zero,
+        onPanUpdate: _onPanUpdate,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          child: Column(
+            children: [
+              _buildTopBar(),
+              const SizedBox(height: 10),
+              Text(
+                '${widget.mode.label} · ${widget.size.label.toUpperCase()}',
+                style: pixelText(7, Colors.white38),
               ),
-            ),
+              const SizedBox(height: 14),
+              _buildBoard(),
+              const SizedBox(height: 22),
+              _buildHint(),
+              const Spacer(),
+              Text('ESC: SALIR', style: pixelText(6, Colors.white24)),
+            ],
           ),
         ),
       ),
     );
   }
 
-  // Lo que se muestra ENCIMA del tablero según el estado de la partida.
-  List<Widget> _buildOverlay() {
-    switch (_game.status) {
-      case GameStatus.ready:
-        return [
-          Align(
-            alignment: const Alignment(0, 0.75),
-            child: _Pill(
-              text: 'Usa las flechas, WASD o desliza para empezar',
-            ),
-          ),
-        ];
-      case GameStatus.playing:
-        return [];
-      case GameStatus.gameOver:
-      case GameStatus.won:
-        final won = _game.status == GameStatus.won;
-        return [
-          Positioned.fill(
-            child: Container(
-              color: Colors.black.withValues(alpha: 0.5),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    won ? '¡Llenaste el campo!' : '¡Chocaste!',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: Color(0xFFF7EBD3),
-                      fontSize: 36,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  // Cuánto comiste: ícono de la comida + número.
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        width: 40,
-                        height: 40,
-                        child: CustomPaint(
-                          painter: FoodIconPainter(widget.food),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Text(
-                        '${_game.score}',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 32,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (_newRecord) ...[
-                    const SizedBox(height: 8),
-                    const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.emoji_events, color: Color(0xFFFFC107)),
-                        SizedBox(width: 6),
-                        Text(
-                          '¡Nuevo récord!',
-                          style: TextStyle(
-                            color: Color(0xFFFFC107),
-                            fontSize: 18,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                  const SizedBox(height: 22),
-                  FilledButton.icon(
-                    onPressed: _restart,
-                    icon: const Icon(Icons.replay_rounded),
-                    label: const Text('Otra vez'),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFFE9A93B),
-                      foregroundColor: const Color(0xFF3E2A14),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 28,
-                        vertical: 14,
-                      ),
-                      textStyle: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ];
-    }
+  // Arriba: volver, puntos de la partida y récord.
+  Widget _buildTopBar() {
+    return Row(
+      children: [
+        PixelButton(
+          label: '<',
+          color: neonBlue,
+          onTap: () => Navigator.of(context).pop(),
+        ),
+        const Spacer(),
+        SizedBox(
+          width: 22,
+          height: 22,
+          child: CustomPaint(painter: SpritePainter(_sprite)),
+        ),
+        const SizedBox(width: 8),
+        Text(_pad(_game.score), style: pixelText(14, neonYellow, glow: 6)),
+        const SizedBox(width: 22),
+        Text('TOP', style: pixelText(7, neonBlue, glow: 4)),
+        const SizedBox(width: 8),
+        Text(
+          _pad(_game.score > _best ? _game.score : _best),
+          style: pixelText(14, Colors.white70),
+        ),
+      ],
+    );
   }
 
-  Widget _buildHeader() {
-    const numberStyle = TextStyle(
-      color: Colors.white,
-      fontSize: 20,
-      fontWeight: FontWeight.w600,
-    );
+  Widget _buildBoard() {
+    final crashed = _game.status == GameStatus.gameOver;
     return Container(
-      height: _headerHeight,
-      color: const Color(0xFF3F7425),
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 28,
-            height: 28,
-            child: CustomPaint(painter: FoodIconPainter(widget.food)),
+      decoration: BoxDecoration(
+        border: Border.all(
+          color: (crashed ? neonRed : neonGreen).withValues(alpha: 0.8),
+          width: 3,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: (crashed ? neonRed : neonGreen).withValues(alpha: 0.25),
+            blurRadius: 14,
           ),
-          const SizedBox(width: 8),
-          Text('${_game.score}', style: numberStyle),
-          const SizedBox(width: 28),
-          const Icon(Icons.emoji_events, color: Color(0xFFFFC107), size: 28),
-          const SizedBox(width: 6),
-          Text('$_best', style: numberStyle),
-          const Spacer(),
-          IconButton(
-            icon: const Icon(Icons.close, color: Colors.white),
-            tooltip: 'Salir al menú',
-            onPressed: () => Navigator.of(context).pop(),
+        ],
+      ),
+      child: SizedBox(
+        width: _boardSide - 6,
+        height: _boardSide - 6,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: CustomPaint(
+                painter: PixelBoardPainter(
+                  BoardView(
+                    cols: _game.cells,
+                    rows: _game.cells,
+                    snake: _game.snake,
+                    food: _game.status == GameStatus.won ? null : _game.food,
+                    foodSprite: _sprite,
+                    // Cuando al anís le queda poquito, parpadea: "¡apúrate!".
+                    anis: _game.anisLeft < 15 && !_blink(150)
+                        ? null
+                        : _game.anis,
+                    crashed: crashed,
+                    inverted: _game.inverted,
+                    // Mientras las luces fallan, el campo se apaga y prende.
+                    dark:
+                        !_game.isOver &&
+                        (_game.dark ||
+                            (_game.flickering && _game.flickerLeft.isOdd)),
+                  ),
+                ),
+              ),
+            ),
+            if (_game.isOver) Positioned.fill(child: _buildGameOver()),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Debajo del tablero: cómo empezar, o los puntos mientras juegas.
+  Widget _buildHint() {
+    if (_game.status == GameStatus.ready) {
+      return Opacity(
+        opacity: _blink(450) ? 1 : 0,
+        child: Column(
+          children: [
+            Text('FLECHAS O W A S D', style: pixelText(8, neonYellow, glow: 6)),
+            const SizedBox(height: 8),
+            Text(
+              'EN EL TELÉFONO, DESLIZA',
+              style: pixelText(7, Colors.white54),
+            ),
+          ],
+        ),
+      );
+    }
+    if (_game.isOver) return const SizedBox.shrink();
+
+    // Mientras juegas: avisos de las sorpresas del modo Criollo.
+    final (String text, Color color)? notice = _game.inverted
+        ? (
+            'CONTROLES AL REVÉS ${_secondsLeft(_game.invertedLeft)}',
+            invertedPurple,
+          )
+        : _game.flickering
+        ? ('LA LUZ ESTÁ FALLANDO...', neonYellow)
+        : _game.dark
+        ? ('SE FUE LA LUZ', neonYellow)
+        : _game.anis != null
+        ? ('¡APARECIÓ UN ANÍS! +3', neonBlue)
+        : null;
+    if (notice == null) return const SizedBox.shrink();
+    return Text(notice.$1, style: pixelText(9, notice.$2, glow: 6));
+  }
+
+  // Pasos que faltan → segundos, redondeando hacia arriba.
+  String _secondsLeft(int steps) =>
+      (steps * _stepTime.inMilliseconds / 1000).ceil().toString();
+
+  // El cartel encima del tablero cuando se acaba la partida.
+  Widget _buildGameOver() {
+    final won = _game.status == GameStatus.won;
+    return Container(
+      color: Colors.black.withValues(alpha: 0.72),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            won ? '¡CAMPO LLENO!' : '¡CHOCASTE!',
+            style: pixelText(18, won ? neonYellow : neonRed, glow: 10),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 30,
+                height: 30,
+                child: CustomPaint(painter: SpritePainter(_sprite)),
+              ),
+              const SizedBox(width: 12),
+              Text(_pad(_game.score), style: pixelText(22, Colors.white)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 14,
+            child: _newRecord
+                ? Opacity(
+                    opacity: _blink(300) ? 1 : 0.25,
+                    child: Text(
+                      '¡NUEVO RÉCORD!',
+                      style: pixelText(9, neonYellow, glow: 6),
+                    ),
+                  )
+                : Text(
+                    'RÉCORD ${_pad(_best)}',
+                    style: pixelText(8, Colors.white38),
+                  ),
+          ),
+          const SizedBox(height: 24),
+          PixelButton(label: 'OTRA VEZ', color: neonYellow, onTap: _restart),
+          const SizedBox(height: 14),
+          PixelButton(
+            label: 'MENÚ',
+            color: neonBlue,
+            onTap: () => Navigator.of(context).pop(),
           ),
         ],
       ),
     );
   }
-}
 
-// Cartelito redondeado semitransparente.
-class _Pill extends StatelessWidget {
-  const _Pill({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.45),
-        borderRadius: BorderRadius.circular(30),
-      ),
-      child: Text(
-        text,
-        textAlign: TextAlign.center,
-        style: const TextStyle(color: Colors.white, fontSize: 14),
-      ),
-    );
-  }
+  String _pad(int n) => n.toString().padLeft(3, '0');
 }
