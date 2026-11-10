@@ -44,7 +44,8 @@ class _GameScreenState extends State<GameScreen>
   // Cada cuánto avanza la culebra una casilla. Menos = más rápido.
   static const _stepTime = Duration(milliseconds: 140);
 
-  late final SnakeGame _game = widget.game ??
+  late final SnakeGame _game =
+      widget.game ??
       SnakeGame(widget.size.cells, criollo: widget.mode == GameMode.criollo);
   Sprite get _sprite => foodSprites[widget.food]!;
 
@@ -283,21 +284,23 @@ class _GameScreenState extends State<GameScreen>
     if (_game.isOver) return const SizedBox.shrink();
 
     // Mientras juegas: avisos de las sorpresas del modo Criollo.
-    final (String text, Color color)? notice = _game.inverted
-        ? (
-            'CONTROLES AL REVÉS ${_secondsLeft(_game.invertedLeft)}',
-            invertedPurple,
-          )
-        : _game.flickering
-        ? ('LA LUZ ESTÁ FALLANDO...', neonYellow)
-        : _game.dark
-        ? ('SE FUE LA LUZ', neonYellow)
-        : _game.anis != null
-        ? ('¡APARECIÓ UN ANÍS! +3', neonBlue)
-        : null;
-    if (notice == null) return const SizedBox.shrink();
-    return Text(notice.$1, style: pixelText(9, notice.$2, glow: 6));
+    // (Se escribe con if simples a propósito: una versión con un "record"
+    // que podía ser null fallaba en la web publicada por un problema del
+    // compilador de producción.)
+    if (_game.inverted) {
+      return _notice(
+        'CONTROLES AL REVÉS ${_secondsLeft(_game.invertedLeft)}',
+        invertedPurple,
+      );
+    }
+    if (_game.flickering) return _notice('LA LUZ ESTÁ FALLANDO...', neonYellow);
+    if (_game.dark) return _notice('SE FUE LA LUZ', neonYellow);
+    if (_game.anis != null) return _notice('¡APARECIÓ UN ANÍS! +3', neonBlue);
+    return const SizedBox.shrink();
   }
+
+  Widget _notice(String text, Color color) =>
+      Text(text, style: pixelText(9, color, glow: 6));
 
   // Pasos que faltan → segundos, redondeando hacia arriba.
   String _secondsLeft(int steps) =>
