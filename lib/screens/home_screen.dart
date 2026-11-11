@@ -1,5 +1,7 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../arcade/arcade_style.dart';
 import '../widgets/arcade_painters.dart';
@@ -45,6 +47,14 @@ class _HomeScreenState extends State<HomeScreen>
     Navigator.of(context)
         .push(MaterialPageRoute(builder: (_) => const RecordsScreen()));
   }
+
+  // Siempre baja el APK del último release de GitHub. Para publicar una
+  // versión nueva solo se sube otro release: este link no cambia.
+  static final _apkUrl = Uri.parse(
+    'https://github.com/Sneider22/mapanare/releases/latest/download/mapanare.apk',
+  );
+
+  void _downloadApk() => launchUrl(_apkUrl);
 
   void _howTo() {
     Navigator.of(context)
@@ -111,6 +121,11 @@ class _HomeScreenState extends State<HomeScreen>
             ],
           ),
           const Spacer(),
+          // Solo en la web: dentro de la app instalada no tiene sentido.
+          if (kIsWeb) ...[
+            _buildApkLink(),
+            const SizedBox(height: 16),
+          ],
           Text('HECHO EN VENEZUELA', style: pixelText(7, Colors.white38)),
         ],
       ),
@@ -195,6 +210,29 @@ class _HomeScreenState extends State<HomeScreen>
         width: cell * DemoSnakePainter.cols,
         height: cell * DemoSnakePainter.rows,
         child: CustomPaint(painter: DemoSnakePainter(step)),
+      ),
+    );
+  }
+
+  // Botoncito discreto para bajar la app: no le roba protagonismo a JUGAR.
+  Widget _buildApkLink() {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: _downloadApk,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            border: Border.all(color: neonGreen.withValues(alpha: 0.7), width: 2),
+          ),
+          child: Column(
+            children: [
+              Text('DESCARGAR APK', style: pixelText(8, neonGreen, glow: 6)),
+              const SizedBox(height: 6),
+              Text('SOLO ANDROID', style: pixelText(6, Colors.white38)),
+            ],
+          ),
+        ),
       ),
     );
   }

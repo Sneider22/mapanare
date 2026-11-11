@@ -33,8 +33,11 @@ class ArcadeScaffold extends StatelessWidget {
         backgroundColor: arcadeBg,
         body: Stack(
           children: [
+            // SizedBox.expand le da al FittedBox TODO el espacio disponible,
+            // así la maquinita se agranda hasta llenar la pantalla a lo alto
+            // (en desktop). Con Center solo encogía, nunca agrandaba.
             SafeArea(
-              child: Center(
+              child: SizedBox.expand(
                 child: FittedBox(
                   child: SizedBox(width: width, height: height, child: child),
                 ),
